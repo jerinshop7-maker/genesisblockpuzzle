@@ -1,4 +1,0 @@
-- Prefers reproducible, incremental investigation: review existing test records before running work, avoid repeating exhausted hypotheses, test small explicit candidate sets, and verify results immediately with an independent oracle or sanity check. Confidence: 0.9
-- Prefers final reports to include exact candidate counts, hypotheses tried, negative results, and a ready-to-use next step when no solution is found. Confidence: 0.85
-- Does not want autonomous actions that spend or transfer cryptocurrency; verification should stop at non-spending proof unless explicitly authorized. Confidence: 0.95
-- Refuses to pursue private-key recovery / brute-force derivation over funds held by a third party (or external wallet) when authorization and puzzle provenance cannot be verified in the current workspace; prefers defensive reviews (auditing the tooling for wallet-sweeping malware) over key-derivation work. Confidence: 0.9
