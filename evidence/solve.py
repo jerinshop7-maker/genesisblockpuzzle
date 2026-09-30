@@ -92,6 +92,40 @@ def representations(f):
     return reps
 
 
+GENESIS_HASH_DISPLAY = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+GENESIS_NEXT_HASH = "0000000000000000000297b4e50f89716e3b1f24f7c8fd4997f62ee1eeaf782b3"
+GENESIS_CHAINWORK = "0000000000000000000000000000000000000000000100010001"
+
+
+def jq_fields():
+    """Exactly what `bitcoin-cli getblock <genesis> 1 | jq -r .<field>` prints.
+
+    The author's toolchain names `jq`, and getblock's JSON is the natural thing to
+    feed it. These are the strings such a pipeline would actually hash, so they
+    are a first-class digest source rather than a re-encoding of some field.
+    """
+    f = genesis_views()
+    return {
+        "jq.hash": GENESIS_HASH_DISPLAY,
+        "jq.versionHex": "00000001",
+        "jq.merkleroot": f["merkle"][::-1].hex(),
+        "jq.time": str(int.from_bytes(f["time"], "little")),
+        "jq.bits": str(int.from_bytes(f["bits"], "little")),
+        "jq.nonce": str(int.from_bytes(f["nonce"], "little")),
+        "jq.difficulty": "1",
+        "jq.chainwork": GENESIS_CHAINWORK,
+        "jq.previousblockhash": "00" * 32,
+        "jq.nextblockhash": GENESIS_NEXT_HASH,
+        "jq.nTx": "1",
+        "jq.size": str(len(GENESIS_RAW)),
+        "jq.weight": "1140",
+        "jq.height": "0",
+        "jq.version": "1",
+        "jq.merkleroot_up": f["merkle"][::-1].hex().upper(),
+        "jq.hash_up": GENESIS_HASH_DISPLAY.upper(),
+    }
+
+
 def contiguous_pieces(data: bytes, minlen=1, maxlen=None):
     """Every contiguous byte range of `data` (the author's stated shape)."""
     n = len(data)
@@ -99,6 +133,34 @@ def contiguous_pieces(data: bytes, minlen=1, maxlen=None):
     for i in range(n):
         for j in range(i + minlen, min(n, i + maxlen) + 1):
             yield data[i:j]
+
+
+def digest_candidates(data: bytes, mode: str, minlen: int, maxlen):
+    """Yield (label, bytes) digest-input candidates for one rendered field.
+
+    mode "full"     - every contiguous range (the brute force the author expects)
+    mode "semantic" - only the ranges a human would actually select with `cut`:
+                      whole field, and every 8/16/32/64-char aligned window
+    mode "whole"    - the entire field, no slicing
+    """
+    if mode == "whole":
+        yield "whole", data
+        return
+    if mode == "full":
+        yield from ((f"c{i}_{j}", data[i:j]) for i, j in _ranges(len(data), minlen, maxlen))
+        return
+    n = len(data)
+    yield "whole", data
+    for width in (8, 16, 32, 64, 128):
+        for start in range(0, n - width + 1):
+            yield f"w{width}_{start}", data[start:start + width]
+
+
+def _ranges(n: int, minlen: int, maxlen):
+    maxlen = maxlen or n
+    for i in range(n):
+        for j in range(i + minlen, min(n, i + maxlen) + 1):
+            yield i, j
 
 
 # ------------------------------------------------------------------ candidate sets
@@ -124,8 +186,24 @@ def passphrase_set(kind):
     return out
 
 
-def account_set(f, max_small=64):
-    """genesis_data as the BIP48 account number. Hardened index must be < 2^31."""
+def account_set(f, max_small=64, mode="basic"):
+    """genesis_data as the BIP48 account number. Hardened index must be < 2^31.
+
+    mode "prune" keeps only the values a human would plausibly pick from the
+    Genesis block, which is what the author means by "some Genesis-block data".
+    mode "all" additionally walks 4-byte windows and digest-derived values.
+    """
+    if mode == "prune":
+        vals = {i: "small" for i in range(6)}
+        vals.update({
+            2009: "year", 1231006505: "time", 2083236893: "nonce",
+            486604799: "bits", 47: "headline_len", 69: "text_len",
+            77: "scriptsig_len", 80: "header_len", 160: "header_hex_len",
+            285: "block_len", 570: "block_hex_len", 204: "tx_len",
+            1032009: "date_mdy", 3012009: "date_dmy", 20090103: "date_ymd",
+        })
+        return vals
+
     vals = {i: "small" for i in range(max_small + 1)}
     vals.update({
         2009: "year", 1231006505: "time", 2083236893: "nonce", 486604799: "bits",
@@ -164,9 +242,17 @@ LEAF_SETS = [(_leaf_label(a) + " vs " + _leaf_label(b), a, b) for a, b in [
     ([0, 0], [2, 0]),
 ]]
 
+# Only the two layouts a standard BIP48 multisig wallet would use. Deriving a
+# leaf costs a point multiplication, so fewer distinct leaf paths is the main
+# lever on total runtime; the pairings themselves are nearly free.
+LEAF_SETS_STD = [(_leaf_label(a) + " vs " + _leaf_label(b), a, b) for a, b in [
+    ([0, 0], [0, 1]),
+    ([0, 0], [1, 0]),
+]]
+
 
 # ------------------------------------------------------------------ driver
-def run(passes, accounts, leaves, digest_specs, verbose=True):
+def run(passes, accounts, leaves, digest_specs, verbose=True, indep=False, env_extra=None):
     """digest_specs: list of (label, bytes). Streams a job to the C engine."""
     buf = []
     for label, data in digest_specs:
@@ -181,10 +267,18 @@ def run(passes, accounts, leaves, digest_specs, verbose=True):
         buf.append((f"L {lab.replace(' ', '_')} {len(la)} " + " ".join(map(str, la))
                     + f" {len(lb)} " + " ".join(map(str, lb)) + "\n").encode())
     buf.append(b"Q\n")
-    proc = subprocess.run([ENGINE], input=b"".join(buf), capture_output=True, cwd=HERE)
+    env = dict(os.environ)
+    if indep:
+        env["ENGINE_INDEP"] = "1"
+    if env_extra:
+        env.update(env_extra)
+    proc = subprocess.run([ENGINE], input=b"".join(buf), capture_output=True,
+                          cwd=HERE, env=env)
     out = proc.stdout.decode(errors="replace")
     if verbose:
         sys.stderr.write(proc.stderr.decode(errors="replace"))
+    if not out.strip():
+        out = f"ENGINE_NO_OUTPUT rc={proc.returncode} err={proc.stderr.decode(errors='replace')[:300]}"
     return out
 
 
@@ -192,36 +286,72 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fields", default="all")
     ap.add_argument("--passphrases", default="basic")
-    ap.add_argument("--accounts", default="basic")
+    ap.add_argument("--accounts", default="prune", choices=("prune", "all"))
+    ap.add_argument("--digest-mode", default="full",
+                    choices=("full", "semantic", "whole"),
+                    help="how to pick ranges within each rendered field")
     ap.add_argument("--minlen", type=int, default=1)
     ap.add_argument("--maxlen", type=int, default=0, help="0 = whole field")
+    ap.add_argument("--indep", action="store_true",
+                    help="independent-root model: two seeds, same BIP48 path")
+    ap.add_argument("--account-only", default="",
+                    help="comma-separated account numbers, overrides --accounts")
+    ap.add_argument("--leaves", default="std",
+                    choices=("std", "all"),
+                    help="std = the two standard cosigner layouts only")
     ap.add_argument("--list-only", action="store_true")
     args = ap.parse_args()
 
     f = genesis_views()
     reps = representations(f)
+    # The author's toolchain names jq, so getblock's JSON fields are their own
+    # digest family, with and without the trailing newline a shell pipeline or a
+    # copy-paste would add.
+    for k, v in jq_fields().items():
+        reps[k] = v.encode()
+        reps[k + ":nl"] = (v + "\n").encode()
     fields = list(reps) if args.fields == "all" else args.fields.split(",")
+    if args.fields == "jq":
+        fields = list(jq_fields().keys())
+        for k in list(fields):
+            fields.append(k + ":nl")
     passes = passphrase_set(args.passphrases)
-    accounts = sorted(account_set(f, 64 if args.accounts == "basic" else 0).items())
+    if args.account_only:
+        accounts = [(int(x), "explicit") for x in args.account_only.split(",") if x != ""]
+    else:
+        accounts = sorted(account_set(f, 64, args.accounts).items())
     maxlen = args.maxlen or None
+    leaves = LEAF_SETS_STD if args.leaves == "std" else LEAF_SETS
 
     specs = []
     for name in fields:
-        base = name.split(":")[0]
-        for i, piece in enumerate(contiguous_pieces(reps[name], args.minlen, maxlen)):
-            specs.append((f"{name}#{i}", piece))
+        for sub, piece in digest_candidates(reps[name], args.digest_mode,
+                                            args.minlen, maxlen):
+            specs.append((f"{name}#{sub}", piece))
 
-    total = len(specs) * len(passes) * len(accounts) * len(LEAF_SETS)
+    # Distinct pieces only; the same bytes under two labels add no coverage.
+    seen, uniq = set(), []
+    for label, d in specs:
+        if d in seen:
+            continue
+        seen.add(d)
+        uniq.append((label, d))
+    specs = uniq
+
+    total = len(specs) * len(passes) * len(accounts) * len(leaves)
+    if args.indep:
+        total = len(specs) * len(accounts) * len(leaves) * (len(passes) * (len(passes) - 1) // 2)
     print(f"digest pieces={len(specs)} passes={len(passes)} accounts={len(accounts)} "
-          f"leafsets={len(LEAF_SETS)}  total script-hash checks={total:,}", flush=True)
+          f"leafsets={len(leaves)} indep={args.indep}  total script-hash checks={total:,}",
+          flush=True)
     if args.list_only:
         for label, d in specs[:40]:
-            print(f"  {label:32} {d!r}")
+            print(f"  {label:32} {d[:70]!r}")
         print(f"  ... {len(specs)} total")
         return 0
 
     t0 = time.time()
-    out = run(passes, accounts, LEAF_SETS, specs)
+    out = run(passes, accounts, leaves, specs, indep=args.indep)
     print(out.strip())
     print(f"elapsed {time.time() - t0:.1f}s")
     return 0 if out.lstrip().startswith("MATCH") else 1

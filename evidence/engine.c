@@ -153,11 +153,30 @@ static int node_path(const Node *root, const uint32_t *path, int n, Node *out) {
 }
 
 /* ------------------------------------------------------------------ config */
+/* Digest inputs are stored in one shared blob with (offset,len) per case.
+ * A fixed 4 KB buffer per case would need ~2 GB for a full contiguous sweep of
+ * the 570-char block hex, which does not fit on a small box. */
 typedef struct {
-    char digest_input[4096];
-    int  digest_input_len;
-    char label[256];
+    unsigned offset;
+    unsigned len;
+    char     label[64];
 } DigestCase;
+
+static unsigned char *DIGEST_BLOB;
+static size_t DIGEST_BLOB_LEN, DIGEST_BLOB_CAP;
+
+static void digest_blob_add(const unsigned char *data, unsigned n) {
+    if (DIGEST_BLOB_LEN + n > DIGEST_BLOB_CAP) {
+        size_t cap = DIGEST_BLOB_CAP ? DIGEST_BLOB_CAP : 1 << 20;
+        while (cap < DIGEST_BLOB_LEN + n) cap *= 2;
+        unsigned char *nb = realloc(DIGEST_BLOB, cap);
+        if (!nb) die("digest blob out of memory");
+        DIGEST_BLOB = nb;
+        DIGEST_BLOB_CAP = cap;
+    }
+    memcpy(DIGEST_BLOB + DIGEST_BLOB_LEN, data, n);
+    DIGEST_BLOB_LEN += n;
+}
 
 typedef struct {
     char passphrase[128];
@@ -230,11 +249,11 @@ static void report_match(const DigestCase *d, const unsigned char *ent,
         printf("MATCH\n");
         printf("  digest   : %s\n", d->label);
         printf("  inputhex : ");
-        for (int i = 0; i < d->digest_input_len; i++)
-            printf("%02x", (unsigned char)d->digest_input[i]);
+        for (unsigned i = 0; i < d->len; i++)
+            printf("%02x", DIGEST_BLOB[d->offset + i]);
         printf("\n  inputtxt : ");
-        for (int i = 0; i < d->digest_input_len; i++) {
-            unsigned char ch = (unsigned char)d->digest_input[i];
+        for (unsigned i = 0; i < d->len; i++) {
+            unsigned char ch = DIGEST_BLOB[d->offset + i];
             putchar(ch >= 32 && ch < 127 ? ch : '.');
         }
         printf("\n  entropy  : "); hex_print(ent, 16);
@@ -283,8 +302,7 @@ static void *worker(void *arg) {
     root.k = NULL;
     for (int di = wa->id; di < N_DIGEST && !FOUND; di += wa->nthreads) {
         unsigned char ent[16];
-        sha256((unsigned char *)DIGESTS[di].digest_input,
-               (size_t)DIGESTS[di].digest_input_len, ent);
+        sha256(DIGEST_BLOB + DIGESTS[di].offset, (size_t)DIGESTS[di].len, ent);
         char words[256];
         entropy_to_mnemonic(ent, words);
 
@@ -340,31 +358,9 @@ static void *worker(void *arg) {
                         hit = check_pair(a, b);
                     }
                     if (hit) {
-                        pthread_mutex_lock(&PRINT_LOCK);
-                        if (!FOUND) {
-                            FOUND = 1;
-                            printf("MATCH\n");
-                            printf("  digest   : %s\n", DIGESTS[di].label);
-                            printf("  inputhex : ");
-                            for (int i = 0; i < DIGESTS[di].digest_input_len; i++)
-                                printf("%02x", (unsigned char)DIGESTS[di].digest_input[i]);
-                            printf("\n  inputtxt : ");
-                            for (int i = 0; i < DIGESTS[di].digest_input_len; i++) {
-                                unsigned char ch = (unsigned char)DIGESTS[di].digest_input[i];
-                                putchar(ch >= 32 && ch < 127 ? ch : '.');
-                            }
-                            printf("\n");
-                            printf("  entropy  : "); hex_print(ent, 16);
-                            printf("\n  words    : %s\n", words);
-                            printf("  pass     : %s\n", PASSES[pi].passphrase);
-                            printf("  account  : %u (%s)\n", ACCOUNTS[ai].account, ACCOUNTS[ai].label);
-                            printf("  leaves   : %s\n", LEAVES[li].label);
-                            printf("  key1     : "); hex_print(k1, 33);
-                            printf("\n  key2     : "); hex_print(k2, 33);
-                            printf("\n");
-                            fflush(stdout);
-                        }
-                        pthread_mutex_unlock(&PRINT_LOCK);
+                        report_match(&DIGESTS[di], ent, words,
+                                     PASSES[pi].passphrase, PASSES[pi].passphrase,
+                                     &ACCOUNTS[ai], LEAVES[li].label, k1, k2);
                     }
                 }
                 free(pk); free(have);
@@ -405,8 +401,7 @@ static void *worker_indep(void *arg) {
 
     for (int di = wa->id; di < N_DIGEST && !FOUND; di += wa->nthreads) {
         unsigned char ent[16];
-        sha256((unsigned char *)DIGESTS[di].digest_input,
-               (size_t)DIGESTS[di].digest_input_len, ent);
+        sha256(DIGEST_BLOB + DIGESTS[di].offset, (size_t)DIGESTS[di].len, ent);
         char words[256];
         entropy_to_mnemonic(ent, words);
 
@@ -495,14 +490,17 @@ int main(int argc, char **argv) {
             hex[n * 2] = 0;
             fgetc(stdin); /* trailing newline */
             if ((int)strlen(hex) != n * 2) die("bad D hex length");
+            unsigned char *raw = malloc((size_t)n ? (size_t)n : 1);
             for (int i = 0; i < n; i++) {
                 unsigned v; sscanf(hex + 2 * i, "%2x", &v);
-                DIGESTS[N_DIGEST].digest_input[i] = (char)v;
+                raw[i] = (unsigned char)v;
             }
-            DIGESTS[N_DIGEST].digest_input[n] = 0;
-            DIGESTS[N_DIGEST].digest_input_len = n;
+            DIGESTS[N_DIGEST].offset = (unsigned)DIGEST_BLOB_LEN;
+            DIGESTS[N_DIGEST].len = (unsigned)n;
+            digest_blob_add(raw, (unsigned)n);
             snprintf(DIGESTS[N_DIGEST].label, sizeof(DIGESTS[N_DIGEST].label), "%s", label);
             N_DIGEST++;
+            free(raw);
             free(hex);
         } else if (kind == 'P') {
             if (N_PASS == cap_p) {

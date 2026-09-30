@@ -9,32 +9,61 @@
 | `crossvalidate_indep.py` (independent-root) | **OK** — 10 planted two-root targets found, 3 negative controls clean |
 | Escrow re-fetch, full history | **OK** — 71 txs, 621,132 sats, 0 spent, unspent |
 
+### Sweeps that ran to completion (all NO_MATCH)
+
+| # | Digest axis | Mode | Accounts | Checks | Result |
+|---|---|---|---:|---:|---|
+| 1 | tool-plausible sub-ranges of 19 rendered fields (`--digest-mode semantic`) | same-root | 21 pruned | 10,665,648 | NO_MATCH |
+| 2 | `getblock` JSON fields via `jq -r` (30 candidates, whole-value) | same-root | 370 all | 1,598,400 | NO_MATCH |
+| 3 | same `jq` axis | independent-root | 370 all | 18,381,600 | NO_MATCH |
+
+Stage 1 covers, for every rendered field, the whole value plus every 8/16/32/64/128
+char aligned window — i.e. the ranges a human would actually select with `cut`.
+Stage 2 and 3 cover a digest family that was **not** in the original notes: the
+author's toolchain names `jq`, and `bitcoin-cli getblock <genesis> 1 | jq -r .<field>`
+prints specific strings (`.nonce` -> `2083236893`, `.merkleroot` -> the hex root,
+`.bits` -> `486604799`, `.chainwork`, `.nextblockhash`, ...), each also tested
+with a trailing newline. Values were verified against the parsed Genesis fields.
+
+Sweep 1 was run twice over its history: an earlier attempt covered only the
+`headline:txt` axis (1,128 of the 3,527 pieces) and was killed at 34 minutes
+without a result. That partial run is **not** counted as evidence either way.
+
 ## In progress
 
-A same-root sweep over the `headline:txt` digest axis was running at the time of
-this snapshot:
-
 ```
-digest pieces=1128 passes=24 accounts=370 leafsets=6
-total script-hash checks=60,099,840
+=== fullhex :: --fields raw_block:hex --digest-mode full
+    --account-only 0,1,2,2009,2083236893,1231006505,486604799 --leaves std
+digest pieces=157207 passes=24 accounts=7 leafsets=2 indep=False
+total script-hash checks=52,821,552
 ```
 
-Measured throughput is about 10,000 checks/second on 2 cores, so roughly
-100 minutes of wall clock. It had produced no match when this file was written.
+Every contiguous character range of the 570-character lowercase hex string that
+`bitcoin-cli getblock <genesis> 0` prints, which is the source the author's
+"exactly as a standard tool shows it" answer points at. Measured throughput is
+about 6,400 checks/second on 2 cores, so roughly 2h20m.
 
-**This is not a completed negative.** Do not record it as one, and do not extend
-it to other fields by inference.
+## Infrastructure fix needed to run the large axis
+
+The first attempt at this stage died instantly. Cause: `DigestCase` held a fixed
+`char digest_input[4096]`, so 157,207 cases needed ~685 MB, and the
+`realloc`-doubling growth path peaked around 2 GB on a 2.2 GB box and was
+OOM-killed.
+
+Fix: digest payloads now live in a single growable byte blob, and each case keeps
+only `(offset, len)` plus a 64-byte label. Both search modes were re-validated
+against the reference after the change, and both passed.
 
 ## Not yet run
 
-- `coinbase_text:txt` and the other text fields
-- `raw_block:hex` — the 570-character `bitcoin-cli getblock <hash> 0` output,
-  which is the single most likely digest source given the author's "exactly as a
-  standard tool shows it" answer. This is 162,735 contiguous ranges, about 14
-  times the headline axis, so it needs the leaf cache and a narrower account set
-  to finish in reasonable time.
-- `raw_block:raw`, `raw_header:hex`, `raw_tx:hex`, `raw_scriptsig:hex`
-- Independent-root mode across any digest axis
+- `fullhex_indep`: the same 157,207 ranges in independent-root mode. This is the
+  single highest-value remaining axis, because it is the model a real 2-of-2
+  multisig uses and no correct engine had tested it before today.
+- `raw_block:raw`, `raw_header:hex`, `raw_tx:hex`, `raw_scriptsig:hex` in
+  `--digest-mode full` (every contiguous range, not just semantic windows).
+- The formatted passphrase set (`--passphrases formatted`).
+- The remaining 363 derived account candidates over the highest-prior digest
+  candidates.
 
 ## Prior results that are void
 
@@ -46,18 +75,15 @@ engine used the secp256k1 group order for point arithmetic. See
 
 ## Next actions, highest value first
 
-1. Run the `raw_block:hex` contiguous-range axis, which is what the author's
-   toolchain description actually points at. Prune the account set to the
-   semantically meaningful values first (nonce, time, bits, year, the Times-text
-   lengths) rather than the full 370-entry derived set, and widen it only if
-   that fails.
-2. Run the independent-root model on the same axis. This covers the "two
-   cosigners, two seeds, same path" reading, which no correct engine has ever
-   tested here.
-3. Only after those, widen the passphrase axis to the formatted name set. The
-   author's "the key question greatly narrows the search space" points at the
-   unanswered question of whether both cosigners share one mnemonic, so
-   independent-root is a higher-value axis than more passphrase spellings.
-4. Re-check the escrow for new OP_RETURNs before any large run. The author said
-   he would ask future questions publicly, and the last twelve messages moved the
+1. `fullhex_indep` — the 157,207 contiguous hex ranges with two independent
+   roots. Queued in `run_sweep.sh`.
+2. If both same-root and independent-root fail on `raw_block:hex`, the digest
+   source is probably not the whole-block hex, and the next thing to test is the
+   explorer's **line-wrapped** rendering (newlines inside the range), which the
+   `tr` in the author's toolchain would strip.
+3. Widen accounts from the 7 used here to the full 370 only after the digest axis
+   is exhausted at a narrow account set.
+4. Re-check the escrow for new OP_RETURNs before any large run. The author said he
+   would ask future questions publicly, and the last twelve messages moved the
    target substantially.
+
