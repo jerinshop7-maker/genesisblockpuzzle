@@ -1,1 +1,9 @@
 __pycache__/
+
+# Compiled search engine binaries (rebuild with the command in
+# evidence/README.md; only engine.c is tracked).
+evidence/engine
+evidence/engine2
+evidence/engine3
+evidence/engine_new
+evidence/eng_asan
