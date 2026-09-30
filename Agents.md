@@ -1,6 +1,13 @@
 # Genesis Block Wallet Puzzle — agent handoff
 
-Snapshot date: 2026-09-25 UTC (chain refresh)
+Snapshot date: **2026-09-30 UTC** (chain refresh + solver rebuild)
+
+> **Read this first.** The previous solver in this repo was cryptographically
+> wrong, so every "no match" it reported is meaningless. Section
+> ["The prior engine is void"](#the-prior-engine-is-void) explains why, and
+> `evidence/README.md` explains how the replacement was proven. Do not reuse
+> `evidence/search_bip48.py`, and do not read the 09-23 / 09-25 search logs as
+> negative results.
 
 ## Current state
 
@@ -12,128 +19,243 @@ Its native P2WSH witness program is:
 
 `4dae67a9872f1402109f9670276afc2c0758f895aafddcd089795771b7964833`
 
-No spend or broadcast was attempted by this investigation. The latest address snapshot reports 54 confirmed transactions, 414,061 sats funded and unspent, with no mempool transactions. The endpoint returned 50 history entries (its page limit). Nine new OP_RETURNs through block 968519 are saved in [evidence/opreturn-2026-09-25.md](/home/kali/genesisblockpuzzle/evidence/opreturn-2026-09-25.md); the prior delta is in [evidence/opreturn-2026-09-24.md](/home/kali/genesisblockpuzzle/evidence/opreturn-2026-09-24.md).
+No spend or broadcast was attempted by this investigation.
 
-The prior local notes are in [TESTS_AND_HINTS.md](/home/kali/genesisblockpuzzle/TESTS_AND_HINTS.md). They are useful context, but the status labels below are the stricter independent assessment.
+| Metric | 2026-09-25 | 2026-09-30 |
+|---|---:|---:|
+| confirmed txs | 54 | **71** |
+| funded (sats) | 414,061 | **621,132** |
+| spent (sats) | 0 | **0** |
+| mempool txs | 0 | 0 |
+
+Still unspent. Reproduce with `python3 evidence/decode_opreturns.py`; the full
+transcript is in `evidence/OPRETURN-TRANSCRIPT-2026-09-30.md` and the new-messages
+delta in `evidence/chain-2026-09-30.md`.
+
+## The puzzle, as currently understood
+
+```
+Genesis block --contiguous range, as a tool prints it--> digest_input
+digest_input --cut|jq|tr-->  hashed text
+hashed text --sha256--> first 32 hex chars = 128-bit entropy
+entropy --BIP39--> 12 words
+words --PBKDF2-HMAC-SHA512(words, "mnemonic" + passphrase)--> seed
+seed --m/48'/0'/ACCOUNT'/2'/leaf--> cosigner public key
+two cosigner keys --> OP_2 <A> <B> OP_2 OP_CHECKMULTISIG
+SHA256(that script) must equal 4dae67a9...b7964833
+```
+
+Open axes: **which contiguous range**, the **passphrase format**, the **account
+number**, and the **two leaf paths / whether the roots are independent**.
 
 ## Confirmed directly by OP_RETURN answers
 
-- The witness script is a multisig.
-- It is 2-of-2: two keys and both are required.
-- Both keys use the same Genesis field.
-- There is no hash in the Genesis-field key derivation statement.
-- The two keys are derived independently from Genesis, not by chaining key 2 from key 1.
-- The author’s derivation order is: `root -> multisig -> mainnet -> genesis_data -> script_type`.
-- `root` is the master key derived from a BIP39 seed.
-- `genesis_data` is some Genesis-block data used as the BIP48 account number.
-- BIP39 has 12 words, with a non-empty passphrase.
-- The entropy is public Genesis-block data, is not the raw 16 bytes, and is a 128-bit digest.
-- The passphrase is a name.
-- The passphrase formatting is deliberately left for brute force.
-- Block 967396 asked about the digest input but did not resolve it.
-- Confirmed answer at block 967477: view Genesis data as binary, hex, decimal, or ASCII and try all four forms.
-- Confirmed at block 967740: the selected source is somewhere in the Genesis block and brute force is expected.
-- Confirmed at block 968343, tx `ae906bdebdf7cd2e9b2490a727d5d91eaa203c2ae68f8461ea62e07ffe3b9b1c`: “First 128 bits of SHA-256 hash of the genesis block's entropy.” This settles SHA-256 and first-16-byte truncation; the selected Genesis byte range/representation remains unresolved.
-- Confirmed at block 968357: following the 50,000-sat escrow payment plus 1,000-sat delivery output, the author posted the two public keys in Electrum `BIE1` ECIES ciphertext to the payer's input pubkey. The Base64 ciphertext and linkage are recorded in the Sept. 24 evidence. It is not publicly decryptable without the payer's private key.
-- Blocks 968411, 968424, 968440, 968461, and 968466 contain encrypted `BIE1` questions to different recipients; their plaintext is not public.
-- Public statement at block 968519 says an earlier private question requested both cosigners' master fingerprints and derivation paths. The author withheld them as too revealing. This identifies origins/paths as a high-value unresolved axis, not their actual values; the author says future questions will be public.
+Each is a quote from the author's own transactions. Block numbers are from the
+full history now stored in `evidence/OPRETURN-TRANSCRIPT-2026-09-30.md`.
+
+### Structure
+
+- The witness script is a multisig. (963744)
+- Two keys, both required. (963768)
+- Both keys use the same Genesis field, and there is no hash. (963829)
+- Both keys are derived independently from Genesis. (963868)
+- Derivation rule: `root -> multisig -> mainnet -> genesis_data -> script_type`. (964496)
+- `root` = the master key derived from the BIP39 seed; `genesis_data` = some data
+  from the Genesis block used as the BIP48 account number. (966409)
+
+### Seed and entropy
+
+- BIP39, 12 words, so 128 bits of entropy; passphrase is non-empty. (966576)
+- The 12 words were generated from entropy. (967140)
+- Passphrase is a name; the entropy is not the raw 16 bytes. (967064)
+- Entropy is a 128-bit digest. (967260, 967281)
+- Entropy = **first 128 bits of SHA-256 of the digest input**. (968343)
+
+### The digest input — this is the new, decisive material
+
+- **The digest input is a contiguous piece of the Genesis block, exactly as a
+  standard tool shows it, and the author got it by copy-pasting the tool's
+  output.** (968601, author)
+- The tool chain was: `bitcoin-cli`, `cut`, `jq`, `tr`, `sha256sum`, then
+  `iancoleman/bip39` or `entropylab`. (968768, author)
+- **The `cut`/`jq`/`tr` step modified the Genesis text BEFORE it was hashed**, and
+  **the 12 words come from the first 32 hex characters of the `sha256sum` output
+  used as raw entropy.** (968996, answering the shape question at 968981 with
+  `1) a; 2) b`)
+- Genesis block is extremely small; "this will have to be uncovered via
+  brute-force". (968768, author)
+
+### What this retires
+
+The block 967477 suggestion that the digest input might be viewed as binary, hex,
+decimal, or ASCII is **no longer the primary axis**. The author says it is a
+contiguous range of the tool-printed block, transformed before hashing. The
+remaining work is to enumerate ranges, not to re-encode fields.
 
 ## Inferences, not yet confirmations
 
-- “Who received the first transaction?” most likely points to Hal Finney, the recipient normally identified for Bitcoin’s first ordinary transaction. Treat `Hal Finney` and its case/spacing variants as a hypothesis until a matching escrow script proves it.
-- A standard BIP48 interpretation is probably `m/48'/0'/ACCOUNT'/2'`, where `0'` is mainnet and `2'` is native P2WSH. The exact two-key leaf convention is not confirmed.
-- It is not confirmed that both cosigners use the same mnemonic/passphrase. The question asking this appears at block 967106, but the answer at 967140 answered a different question about generated words.
-- It is not confirmed whether `genesis_data` is nonce, time, bits, a length, a 32-byte field reduced to an account integer, or another canonical Genesis value.
-- It is not confirmed whether “128-bit digest” means MD5, a truncation of SHA-256, or another 128-bit digest construction.
-- The 50,000-sat offer to reveal public keys is not used; no payment, spend, or broadcast is authorized or attempted.
+- "The passphrase is a name" is confirmed; the name itself is not. The standing
+  hypothesis is **Hal Finney** (recipient of the first Bitcoin transaction), with
+  Satoshi Nakamoto as the secondary candidate. Neither has produced a matching
+  escrow script.
+- The passphrase formatting is deliberately left for brute force (967383: "You'll
+  have to discover the fmt through brute force. The key question greatly narrows
+  the search space"). "The key question" appears to be the question at 967106,
+  *"Do both cosigners use the same 12 words and the same passphrase?"*, which the
+  author has never answered directly. Treat that as the highest-value unknown.
+- `genesis_data` as the account number is not narrowed to a specific field.
+  Candidates: nonce `2083236893`, time `1231006505`, bits `486604799`, year
+  `2009`, a date integer, or a 4-byte window of some field reduced below `2^31`.
+- The two leaf paths are not confirmed. The questioner at 968603 reads the
+  origins as `[fingerprint/48h/0h/acct'/2h]`, i.e. depth 4 with the two keys
+  distinguished beneath it. Standard candidates are the external pair `0/0` and
+  `0/1`, and the cosigner-branch pair `0/0` and `1/0`.
+- Whether the two keys come from one seed (two leaves) or two seeds (two
+  cosigner roots) is **not** settled. Both models are now implemented.
+- The 50,000-sat offer to reveal the public keys is not used. No payment, spend,
+  or broadcast is authorized or attempted.
+
+## The prior engine is void
+
+`evidence/search_bip48.py` defines one constant and uses it for two different
+secp256k1 moduli:
+
+```python
+N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+```
+
+That value is the secp256k1 **group order**. It is correct for the BIP32
+child-key addition, but it is **not** the **field prime**, which is
+`FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F`. All of the
+script's point arithmetic therefore ran modulo the wrong modulus, so every
+derived public key was wrong and every comparison was against a hash that could
+never match. Hardened-only derivation never needs the public key, which is why the
+bug survived.
+
+Therefore:
+
+- Every "no match" in `search-log-2026-09-23.md` and `search-log-2026-09-25.md`
+  is meaningless. Read them as **untested**.
+- The interrupted sweeps described there should not be resumed or extended.
+- The 50,000-sat / 30k / 20k offers, and the earlier completed matrix, all
+  rest on that engine.
+
+One-line check that catches the class of bug: `G` satisfies `y^2 = x^3 + 7 (mod p)`
+but not `(mod n)`.
+
+## How the replacement was proven
+
+`evidence/reference.py` is the correctness oracle and its self-test must pass
+before any sweep result is trusted:
+
+- BIP32 against the BitcoinJS `bip32` fixtures at every level of
+  `m -> m/0' -> m/0'/1 -> m/0'/1/2' -> ... -> /1000000000`
+- **full xpub base58check serialization byte-identical to BitcoinJS** for the
+  master and all five children
+- all 24 official BIP39 English vectors, plus the official PBKDF2 passphrase vector
+- an explicit assertion that the field prime and group order differ, and that `G`
+  is on the curve over `P`
+
+`evidence/engine.c` is the fast C/OpenSSL engine, proven against that oracle by
+planting targets and requiring the engine to find them, plus negative controls
+against the real escrow target, in both search modes.
+
+Full write-up, including four engine bugs and two test-harness bugs that would
+each have faked a result: `evidence/verification-2026-09-30.md`.
 
 ## Recovered Genesis bytes
 
-Fetched from the public raw Genesis endpoint:
+Fetched from the public raw Genesis endpoint, 285 bytes, verified by asserting
+that the double-SHA256 of the first 80 bytes reproduces the block hash:
 
 `https://blockstream.info/api/block/000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f/raw`
-
-Observed raw block length: 285 bytes. Header: 80 bytes. The block contains one transaction.
 
 - Genesis block hash: `000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f`
 - Merkle root: `4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b`
 - Time: `1231006505` (`03/Jan/2009` in the Times text)
 - Bits: `0x1d00ffff` / `486604799`
 - Nonce: `2083236893`
-- Coinbase scriptSig length: 77 bytes
-- Coinbase scriptSig prefix: `04ffff001d010445`
+- Coinbase scriptSig length: 77 bytes; prefix `04ffff001d010445`
 - 69-byte visible text: `The Times 03/Jan/2009 Chancellor on brink of second bailout for banks`
 - 47-byte headline suffix: `Chancellor on brink of second bailout for banks`
-- Coinbase output pubkey (65-byte uncompressed SEC key): `04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0bdd8d578a4c702b6bf11d5fac`
+- Coinbase output pubkey: `04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac`
 
-Important parsing detail: the coinbase transaction begins after the one-byte transaction-count field. Within the transaction, the scriptSig length is at offset 41 and the scriptSig begins at offset 42. The visible Times text begins at scriptSig byte 8, not byte 7.
+The hardcoded hex previously in this repo was malformed (290 bytes, and a
+corrupted run in the coinbase pubkey). That is fixed and length-asserted.
 
-## Tests already run and their result
+Parsing detail: the coinbase transaction begins after the one-byte transaction
+count. Within the transaction, the scriptSig length is at offset 41 and the
+scriptSig begins at offset 42. The visible Times text begins at scriptSig byte 8,
+not byte 7.
 
-The interrupted sweeps did not find a match. They tested combinations of:
+## Tooling
 
-- Genesis raw block, raw header, raw coinbase transaction, raw scriptSig, 69-byte Times text, 47-byte headline, merkle root, time, bits, nonce, block hash, and common Times-text variants.
-- MD5 and first/last 16 bytes of SHA-256 for many of those inputs.
-- Hal/Finney name variants including spacing, joining, case, hyphen, initials, and longer legal-name guesses.
-- Explicit account candidates `0, 1, 2, 3, 47, 69, 77, 2009, 1231006505, 2083236893, 486604799`, plus selected 4-byte interpretations of Genesis fields and digest values.
-- Standard-looking extra BIP48 leaf paths using child indices 0 and 1, hardened and non-hardened variants, including one-, two-, and three-level suffixes.
-- Compressed public keys in `OP_2 <33-byte key> <33-byte key> OP_2 OP_CHECKMULTISIG`, hashed with SHA-256 and compared to the escrow witness program.
+Build, verify, and run:
 
-This is negative evidence only. The sweep was broad but not exhaustive and was stopped because it grew combinatorially; no claim of “no solution” is justified.
+```sh
+cd evidence
+gcc -O2 -march=native -o engine engine.c -lcrypto -lpthread
+python3 reference.py
+python3 crossvalidate.py
+python3 crossvalidate_indep.py
+python3 solve.py --fields headline:txt            # same-root model
+ENGINE_INDEP=1 python3 solve.py --fields headline:txt   # independent-root model
+```
 
-## Promising discovery
-
-The live OP_RETURN sequence narrows the puzzle substantially beyond the old snapshot:
-
-`BIP39 12 words` -> `passphrase Y` -> `passphrase is a name` -> `words generated from entropy` -> `128-bit digest` -> `discover passphrase format through brute force` -> `digest input still unknown`.
-
-The confirmed entropy rule is `SHA256(candidate Genesis bytes)[0:16]`, then BIP39 mnemonic generation. The candidate Genesis part and its representation still require brute force. “Entropy” likely names the selected Genesis byte sequence; test candidates against the escrow hash.
-
-The block-967477 answer gives a concrete representation matrix: binary, hex, decimal, or ASCII. The block-968343 answer confirms the first 16 bytes of SHA-256. Local tests cover common fields and representations under a Hal Finney passphrase hypothesis; the largest formatted-name run was interrupted and is not a completed negative. Details are in [evidence/search-log-2026-09-23.md](/home/kali/genesisblockpuzzle/evidence/search-log-2026-09-23.md) and the Sept. 24 chain update.
-
-The Sept. 25 OP_RETURNs add no entropy/account value, but reveal that both cosigners' master fingerprints and derivation paths were requested privately and withheld as too revealing. This makes exact key origins the clearest information bottleneck. Watch for the promised public follow-up.
-
-A later same-root sweep (153 representations × 41 basic passphrases × 123 accounts × six standard leaf layouts) was interrupted without a `MATCH` or `NO_MATCH`; it is not evidence either way. See [evidence/search-log-2026-09-25.md](/home/kali/genesisblockpuzzle/evidence/search-log-2026-09-25.md). Do not rerun unchanged; first cache BIP32 nodes and add progress/checkpointing.
+See `evidence/README.md`. Nothing in the tooling spends, signs, or broadcasts.
 
 ## Tree route for the next continuation
 
 ```text
 Start
-├─ A. Preserve/re-fetch chain evidence
-│  ├─ Latest captured public response is block 968519; re-check for follow-up OP_RETURNs.
-│  ├─ Append only new txids/OP_RETURNs to the evidence snapshot.
-│  └─ Re-check escrow status and witness program before any solver claim.
+├─ 0. Guard rails
+│  ├─ Rebuild and re-verify: reference.py, crossvalidate.py, crossvalidate_indep.py
+│  ├─ Re-fetch the escrow; append only new txids to the transcript
+│  └─ If new OP_RETURNs exist, they outrank everything below
 │
-├─ B. Resolve the 128-bit entropy input (confirmed: SHA256(input)[0:16])
-│  ├─ B1: Enumerate Genesis fields and contiguous byte ranges
-│  ├─ B2: For each candidate, test binary/raw bytes
-│  ├─ B3: Test hex text (lower/uppercase, with/without 0x)
-│  ├─ B4: Test decimal integers and bytewise decimal forms
-│  └─ B5: Test ASCII/text forms, including the Times text/headline
+├─ A. Highest-value axis: the tool-printed contiguous range
+│  ├─ A1: raw_block:hex — the exact 570-char `bitcoin-cli getblock <h> 0` output
+│  │     162,735 contiguous char ranges
+│  ├─ A2: same, with newlines/indentation stripped, as an explorer wraps it
+│  ├─ A3: header-only, coinbase-tx-only, and scriptSig-only hex
+│  ├─ A4: the 69-byte Times text and the 47-byte headline, as text
+│  └─ A5: order by descending prior, and stop the moment anything matches
 │
-├─ C. Resolve BIP48 account
-│  ├─ C1: Keep account-source search separate from entropy-source search
-│  ├─ C2: nonce, time, bits, field lengths, year/date-derived integers
-│  ├─ C3: 4-byte windows in both endian orders and legal low-31-bit mappings
-│  └─ C4: preserve BIP32's 31-bit child-index limit
+├─ B. Account number (run alongside A, not after it)
+│  ├─ B1: prune to the semantically meaningful values first
+│  │     nonce, time, bits, year 2009, date integers, 47, 69, 77
+│  ├─ B2: then the 4-byte windows of every header field, both endians
+│  ├─ B3: then digest-derived values mod 2^31
+│  └─ B4: keep every value below 2^31 (BIP32 hardened limit)
 │
-├─ D. Resolve the two independent leaves
-│  ├─ D1: base/0 and base/1
-│  ├─ D2: base/0' and base/1'
-│  ├─ D3: base/0/0 and base/1/0
-│  ├─ D4: base/0'/0' and base/1'/0'
-│  ├─ D5: external/change alternatives only after D1-D4
-│  └─ D6: test both pubkey orders and compressed/uncompressed serialization
+├─ C. The two keys
+│  ├─ C1: same-root, leaves 0/0 and 0/1
+│  ├─ C2: same-root, leaves 0/0 and 1/0
+│  ├─ C3: independent-root, two seeds from the same name set, same leaf path
+│  │      <- this is the model no correct engine had tested here before
+│  └─ C4: both key orderings, compressed 33-byte keys
 │
-└─ E. Validate a candidate
-   ├─ Recompute BIP39 checksum and mnemonic exactly.
-   ├─ Recompute PBKDF2-HMAC-SHA512 with the candidate passphrase.
-   ├─ Recompute BIP32 master and both child keys independently.
-   ├─ Build exact 2-of-2 witness script and SHA-256 it.
-   ├─ Require exact equality to 4dae67a9872f1402109f9670276afc2c0758f895aafddcd089795771b7964833.
-   └─ Only after equality call the result solved/confirmed; never infer from a plausible mnemonic alone.
+├─ D. Passphrase (only widen after C)
+│  ├─ D1: Hal Finney formats — space, joined, case, initial, legal name
+│  ├─ D2: Satoshi Nakamoto formats
+│  └─ D3: note the author's "the key question" is whether both cosigners share
+│         one mnemonic, so C3 is higher value than more D spellings
+│
+└─ E. Validate before believing
+   ├─ Require exact SHA-256 equality on the witness script
+   ├─ Re-derive the match independently with reference.py, not the engine
+   ├─ Re-derive the BIP39 words and PBKDF2 seed by hand from the stated inputs
+   └─ Never call it solved on a plausible mnemonic, a partial match, or an
+       "almost" fingerprint
 ```
 
 ## Do not repeat blindly
 
-Do not start another all-dimensions Cartesian sweep without first fixing the search axes and recording them. The previous broad run demonstrated that naive combinations become expensive quickly. Continue from branch B/C/D with a small, logged matrix, and save every tested axis and result beside this handoff.
+- Do not rerun `search_bip48.py` or resume the sweeps in the 09-23 / 09-25 logs.
+  Their results are void, not negative.
+- Do not treat an interrupted run as a negative. Record a run only when it
+  actually printed `MATCH` or `NO_MATCH`, and say which axes it covered.
+- Do not start another all-dimensions Cartesian sweep without fixing the axes
+  and logging them. Cache the BIP48 account node and the leaf pubkeys per account
+  first; that alone is a ~2.7x speedup and makes extra leaf layouts nearly free.
+- Do not claim a solution without exact witness-script hash equality.
