@@ -20,7 +20,7 @@
 set -u
 cd "$(dirname "$0")"
 PY=/app/.venv/bin/python
-LOG=${1:-/tmp/sweep.log}
+LOG=${1:-"$(pwd)/sweep.log"}
 shift || true
 
 ALL_STAGES=(coupled jqfull jqfull_indep semantic fullhex fullhex_indep)
@@ -50,7 +50,11 @@ stage_total() {
 }
 
 CHUNK=${CHUNK:-20000}
-CKPT=${CKPT:-/tmp/sweep_ckpt}
+# Checkpoints live next to the repo, not in /tmp: /tmp did not survive a host
+# restart here, and a missing checkpoint file silently loses all progress.
+CKPT=${CKPT:-"$(pwd)/sweep.ckpt"}
+# Make sure the checkpoint file exists before anything tries to append to it.
+: >> "$CKPT"
 STAGES=("$@")
 if [ ${#STAGES[@]} -eq 0 ]; then
   STAGES=("${ALL_STAGES[@]}")

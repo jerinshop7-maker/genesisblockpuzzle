@@ -7,3 +7,5 @@ evidence/engine2
 evidence/engine3
 evidence/engine_new
 evidence/eng_asan
+evidence/sweep.log
+evidence/sweep.ckpt

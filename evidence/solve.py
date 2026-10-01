@@ -273,13 +273,17 @@ def run(passes, accounts, leaves, digest_specs, verbose=True, indep=False, env_e
         env["ENGINE_INDEP"] = "1"
     if env_extra:
         env.update(env_extra)
-    proc = subprocess.run([ENGINE], input=b"".join(buf), capture_output=True,
+    # Capture stdout (the MATCH / NO_MATCH verdict) but let the engine's stderr go
+    # straight through, so ENGINE_PROGRESS heartbeats stream live. With
+    # capture_output=True the progress was buffered until the run ended, which
+    # made a multi-hour sweep look hung.
+    proc = subprocess.run([ENGINE], input=b"".join(buf), stdout=subprocess.PIPE,
                           cwd=HERE, env=env)
     out = proc.stdout.decode(errors="replace")
-    if verbose:
+    if verbose and proc.stderr:
         sys.stderr.write(proc.stderr.decode(errors="replace"))
     if not out.strip():
-        out = f"ENGINE_NO_OUTPUT rc={proc.returncode} err={proc.stderr.decode(errors='replace')[:300]}"
+        out = f"ENGINE_NO_OUTPUT rc={proc.returncode}"
     return out
 
 
