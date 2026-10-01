@@ -242,12 +242,13 @@ LEAF_SETS = [(_leaf_label(a) + " vs " + _leaf_label(b), a, b) for a, b in [
     ([0, 0], [2, 0]),
 ]]
 
-# Only the two layouts a standard BIP48 multisig wallet would use. Deriving a
-# leaf costs a point multiplication, so fewer distinct leaf paths is the main
-# lever on total runtime; the pairings themselves are nearly free.
+# The two layouts a standard BIP48 multisig wallet would use, plus the degenerate
+# "both keys are the account node itself" case. That last one is only meaningful
+# with two independent roots, but including it costs no extra derivation.
 LEAF_SETS_STD = [(_leaf_label(a) + " vs " + _leaf_label(b), a, b) for a, b in [
     ([0, 0], [0, 1]),
     ([0, 0], [1, 0]),
+    ([], []),
 ]]
 
 
@@ -296,6 +297,8 @@ def main():
                     help="independent-root model: two seeds, same BIP48 path")
     ap.add_argument("--account-only", default="",
                     help="comma-separated account numbers, overrides --accounts")
+    ap.add_argument("--chunk-start", type=int, default=0)
+    ap.add_argument("--chunk-size", type=int, default=0, help="0 = one chunk")
     ap.add_argument("--leaves", default="std",
                     choices=("std", "all"),
                     help="std = the two standard cosigner layouts only")
@@ -337,6 +340,11 @@ def main():
         seen.add(d)
         uniq.append((label, d))
     specs = uniq
+
+    # Chunking so a crash or a host restart costs at most one chunk, and so the
+    # digest axis can be walked in pieces with a durable record of what is done.
+    if args.chunk_size:
+        specs = specs[args.chunk_start:args.chunk_start + args.chunk_size]
 
     total = len(specs) * len(passes) * len(accounts) * len(leaves)
     if args.indep:

@@ -22,6 +22,7 @@
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
+#include <time.h>
 
 static const char *TARGET_HEX = "4dae67a9872f1402109f9670276afc2c0758f895aafddcd089795771b7964833";
 static unsigned char TARGET[32];
@@ -138,6 +139,15 @@ static int node_ckd(const Node *par, uint32_t index, Node *out) {
 }
 
 static int node_path(const Node *root, const uint32_t *path, int n, Node *out) {
+    /* A zero-length path is meaningful: it selects the node itself, which is
+     * what we want when both cosigner keys sit directly at
+     * m/48'/0'/ACCOUNT'/SCRIPT'. Return a fresh BIGNUM so the caller's
+     * node_free can never alias the caller's root. */
+    if (n == 0) {
+        out->k = BN_dup(root->k);
+        memcpy(out->c, root->c, 32);
+        return out->k != NULL;
+    }
     Node cur = *root;
     for (int i = 0; i < n; i++) {
         Node nx;
@@ -301,6 +311,19 @@ static void *worker(void *arg) {
     Node root;
     root.k = NULL;
     for (int di = wa->id; di < N_DIGEST && !FOUND; di += wa->nthreads) {
+        if (getenv("ENGINE_PROGRESS")) {
+            /* A long sweep that dies used to leave no trace at all. Emit a
+             * heartbeat so the reached digest index is recoverable. */
+            static time_t last = 0;
+            time_t now = time(NULL);
+            if (last == 0 || now - last >= 20) {
+                last = now;
+                pthread_mutex_lock(&PRINT_LOCK);
+                fprintf(stderr, "[progress] same-root digest %d/%d checked=%lld\n",
+                        di, N_DIGEST, wa->checked);
+                pthread_mutex_unlock(&PRINT_LOCK);
+            }
+        }
         unsigned char ent[16];
         sha256(DIGEST_BLOB + DIGESTS[di].offset, (size_t)DIGESTS[di].len, ent);
         char words[256];
@@ -400,6 +423,17 @@ static void *worker_indep(void *arg) {
 #define SLOT(pi, u) ((size_t)(pi) * (size_t)N_UNIQUE_LEAF + (size_t)(u))
 
     for (int di = wa->id; di < N_DIGEST && !FOUND; di += wa->nthreads) {
+        if (getenv("ENGINE_PROGRESS")) {
+            static time_t last = 0;
+            time_t now = time(NULL);
+            if (last == 0 || now - last >= 20) {
+                last = now;
+                pthread_mutex_lock(&PRINT_LOCK);
+                fprintf(stderr, "[progress] indep digest %d/%d checked=%lld\n",
+                        di, N_DIGEST, wa->checked);
+                pthread_mutex_unlock(&PRINT_LOCK);
+            }
+        }
         unsigned char ent[16];
         sha256(DIGEST_BLOB + DIGESTS[di].offset, (size_t)DIGESTS[di].len, ent);
         char words[256];

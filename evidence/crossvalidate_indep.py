@@ -89,7 +89,9 @@ def main():
         ia, ib = sorted(rng.sample(range(len(pool)), 2))
         pa, pb = pool[ia], pool[ib]
         account = rng.randrange(0, 1 << 18)
-        leaf = [rng.randrange(0, 3)]
+        # Occasionally use the degenerate zero-length leaf (both keys are the
+        # account node itself), which is only meaningful with two roots.
+        leaf = [] if t % 5 == 0 else [rng.randrange(0, 3)]
         # Build the target in the same key order the engine's pa<pb loop yields.
         ka, kb = ref_keys(src, pa, pb, account, leaf)
         want = ref_hash(src, pa, pb, account, leaf)
